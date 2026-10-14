@@ -249,6 +249,7 @@
   table.val th{text-align:left;font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600;padding:6px 10px;border-bottom:1px solid var(--line)}
   table.val td{padding:7px 10px;border-bottom:1px solid var(--line)}
   .rad-wrap{display:grid;gap:12px;min-width:0}
+  .mini-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
   .rad-grid{display:grid;grid-template-columns:repeat(4, minmax(0,1fr));gap:6px}
   .rad{display:grid;grid-template-rows:1fr auto;justify-items:center;align-items:center;gap:2px;padding:6px 4px;border-radius:8px;font-size:.78rem;height:108px;min-width:0}
   .rad canvas{max-width:100%;height:auto}
@@ -1012,6 +1013,7 @@ const CHEM = (() => {
       else if (size === 4) {
         const k0 = kids(start);
         if (k0.length === 1 && kids(k0[0]).length === 2) special = 'isobutil';
+        else if (k0.length === 3) special = 'terc-butil';
         else if (k0.length === 2 && k0.some(k => kids(k).length === 1)) special = 'sec-butil';
       }
       if (special) return { name: special, sort: sortKey(special), unsat: false, atoms };
@@ -1630,9 +1632,9 @@ const INORG = (() => {
   } catch (e) {}
 
   // ---- Progreso: rachas y dominio por tema (se guarda solo en este navegador) ----
-  // Un «tema» es cada uno de los niveles 1–20 (el 21 mezcla los grupos funcionales).
+  // Un «tema» es cada uno de los niveles 1–21 (el 21 combina varios grupos funcionales).
   // El dominio de un tema = aciertos en sus últimos HIST intentos; con él se decide qué repetir.
-  const SK_N = 20, HIST = 8;
+  const SK_N = 21, HIST = 8;
   let stats = { sk: {}, errs: {}, best: 0, tot: 0, ok: 0 };
   try { const s0 = JSON.parse(localStorage.getItem('co-stats')); if (s0 && s0.sk) stats = Object.assign(stats, s0); } catch (e) {}
   const saveStats = () => { try { localStorage.setItem('co-stats', JSON.stringify(stats)); } catch (e) {} };
@@ -1654,7 +1656,11 @@ const INORG = (() => {
   }
   const isWeak = l => { const i = skillInfo(l); return i.n >= 2 && i.acc <= 0.6; };
   const isStrong = l => { const i = skillInfo(l); return i.n >= 3 && i.acc >= 0.85; };
-  function record(skill, ok, tag) {
+  function record(skill, ok, tag, shared) {
+    for (const l of shared || []) {                  // un ejercicio combinado también cuenta para cada grupo que lleva
+      const s1 = stats.sk[l] || (stats.sk[l] = { h: [], a: 0, o: 0 });
+      s1.h.push(ok ? 1 : 0); if (s1.h.length > HIST) s1.h.shift();
+    }
     const s0 = stats.sk[skill] || (stats.sk[skill] = { h: [], a: 0, o: 0 });
     s0.h.push(ok ? 1 : 0); if (s0.h.length > HIST) s0.h.shift();
     s0.a++; if (ok) s0.o++;
@@ -1666,7 +1672,7 @@ const INORG = (() => {
   function settle(ok, tag) {
     if (pr.counted) return false;
     pr.counted = true; pr.failed = !ok;
-    record(pr.target.skill, ok, tag);
+    record(pr.target.skill, ok, tag, (pr.target.groups || []).map(g => FIRST_GROUP_LVL + GROUP_TPL.indexOf(g)));
     return true;
   }
   function bumpStreak(cls) {
@@ -1910,20 +1916,92 @@ const INORG = (() => {
       if (n >= 4 && Math.random() < .45) gAlkyls(G, ks.slice(0, n - 1), ri(1, 2), [1, 1, 2]);
       if (n >= 3 && Math.random() < .2) gHetero(G, ks.slice(0, n - 1), 1, HALS, false);
       return G;
+    },
+    // Nivel «todos los grupos»: 2 (a veces 3) grupos funcionales distintos en la misma molécula.
+    // El de mayor prioridad da la terminación; los demás van como prefijo (hidroxi, oxo, amino, alcoxi…).
+    combo() {
+      const types = comboTypes(); if (!types) return null;
+      const n = ri(3, 7), G = gNew(), ks = gChain(G, n);
+      const ends = [0, n - 1].sort(() => Math.random() - .5);
+      const END = ['acido', 'ester', 'amida', 'nitrilo', 'aldehido'];
+      const up = [[0, -1]], dn = [[0, 1]], vert = [[0, -1], [0, 1]];
+      for (const t of types) {
+        let ok = false;
+        if (END.includes(t)) {
+          const e = ends.shift(); if (e === undefined) return null;
+          const k = ks[e];
+          if (t === 'aldehido') ok = !!gAttach(G, k, 'O', 2, vert);
+          else if (t === 'nitrilo') ok = !!gAttach(G, k, 'N', 3, [[e ? 1 : -1, 0]]);
+          else {
+            const o = gAttach(G, k, 'O', 2, up);
+            const x2 = gAttach(G, k, t === 'amida' ? 'N' : 'O', 1, dn);
+            ok = !!(o && x2);
+            if (ok && t === 'ester') {
+              const [x, y] = P(x2); let prev = x2;
+              for (let j = 1, m = ri(1, 2); j <= m; j++) { const c = gPut(G, x, y + j, 'C'); if (!c) return null; gLink(G, prev, c); prev = c; }
+            }
+          }
+        } else if (t === 'cetona') ok = !!gAttach(G, pick(ks.slice(1, -1)), 'O', 2, vert);
+        else if (t === 'alcohol') ok = !!gAttach(G, pick(ks), 'O', 1, vert);
+        else if (t === 'amina') ok = !!gAttach(G, pick(ks), 'N', 1, vert);
+        else if (t === 'halo') ok = !!gAttach(G, pick(ks), pick(Math.random() < .2 ? ['NO2', ...HALS] : HALS), 1, vert);
+        else if (t === 'eter') {
+          const k = pick(ks), o = gAttach(G, k, 'O', 1, vert); if (!o) return null;
+          const [x, y] = P(o), d = y - P(k)[1]; let prev = o;
+          for (let j = 1, m = ri(1, 2); j <= m; j++) { const c = gPut(G, x, y + d * j, 'C'); if (!c) return null; gLink(G, prev, c); prev = c; }
+          ok = true;
+        }
+        if (!ok) return null;
+      }
+      if (Math.random() < .25) gUnsat(G, ks, 1, 0);
+      if (n >= 4 && Math.random() < .25) gAlkyls(G, ks, 1, [1]);
+      // un carbono con dos heteroátomos distintos (amino y yodo juntos, etc.) no es un compuesto razonable
+      for (const c of G.atoms.keys()) {
+        if (G.atoms.get(c).el !== 'C') continue;
+        let het = 0, multi = false;
+        for (const [bk, o] of G.bonds) {
+          const [a, b2] = bk.split('|'); if (a !== c && b2 !== c) continue;
+          if (G.atoms.get(a === c ? b2 : a).el !== 'C') { het++; if (o > 1) multi = true; }
+        }
+        if (!multi && het > 1) return null;
+      }
+      G.groups = types;
+      return G;
     }
   };
+  // ¿Qué grupos lleva una molécula del nivel combinado? Los de menos prioridad tienen que poder ir
+  // como prefijo; con la práctica adaptativa, el primero se elige entre los grupos que más fallas.
+  const COMBO_RANK = ['acido', 'ester', 'amida', 'nitrilo', 'aldehido', 'cetona', 'alcohol', 'amina', 'eter'];
+  const COMBO_PREFIX = new Set(['halo', 'eter', 'amina', 'alcohol', 'cetona', 'aldehido']);
+  const COMBO_SUF = { acido: /^ácido /, ester: /oato de /, amida: /amida$/, nitrilo: /nitrilo$/, aldehido: /al$/, cetona: /ona$/, alcohol: /ol$/, amina: /amina$/ };
+  const COMBO_PFX = { halo: /fluoro|cloro|bromo|yodo|nitro/, eter: /(met|et|prop|but)oxi/, amina: /amino/, alcohol: /hidroxi/, cetona: /oxo/, aldehido: /oxo/ };
+  const comboFirst = () => pr.adapt
+    ? GROUP_TPL[pickSkill([11, 12, 13, 14, 15, 16, 17, 18, 19, 20], null) - FIRST_GROUP_LVL] : pick(GROUP_TPL);
+  function comboTypes() {
+    const rank = g => COMBO_RANK.indexOf(g) + 1 || 99;
+    for (let t = 0; t < 60; t++) {
+      const k = Math.random() < .25 ? 3 : 2, set = new Set([comboFirst()]);
+      while (set.size < k) set.add(pick(GROUP_TPL));
+      const arr = [...set].sort((a, b) => rank(a) - rank(b)), top = arr[0], rest = arr.slice(1);
+      if (!rest.length || !rest.every(g => COMBO_PREFIX.has(g))) continue;
+      if (top === 'eter' || (top === 'amina' && rest.includes('eter'))) continue;   // dan nombres rebuscados
+      return arr;
+    }
+    return null;
+  }
+  const comboNamed = (groups, name) => groups.every((g, i) => (i ? COMBO_PFX[g] : COMBO_SUF[g] || COMBO_PFX[g]).test(name));
   const GROUP_TPL = ['halo', 'alcohol', 'eter', 'aldehido', 'cetona', 'acido', 'ester', 'amina', 'amida', 'nitrilo'];
   const LVL = [null,
     { title: 'Alcanos lineales', ex: 'metano, propano, hexano…', tpl: 'hc', n: [1, 10], dbl: [0, 0], tri: [0, 0], subs: [0, 0], sizes: [1] },
     { title: 'Alcanos con metilos', ex: '2-metilbutano, 2,3-dimetilpentano', tpl: 'hc', n: [4, 7], dbl: [0, 0], tri: [0, 0], subs: [1, 2], sizes: [1] },
     { title: 'Alcanos ramificados', ex: '3-etil-2-metilhexano, trimetil…', tpl: 'hc', n: [5, 9], dbl: [0, 0], tri: [0, 0], subs: [2, 4], sizes: [1, 1, 2, 3] },
-    { title: 'Radicales ramificados', ex: 'isopropil, 3-isopropilhexano', tpl: 'hc', n: [6, 9], dbl: [0, 0], tri: [0, 0], subs: [1, 2], sizes: ['iPr', 'iPr', 1, 2], re: /isopropil/ },
+    { title: 'Radicales ramificados', ex: 'isopropil, terc-butil', tpl: 'hc', n: [6, 9], dbl: [0, 0], tri: [0, 0], subs: [1, 2], sizes: ['iPr', 'iPr', 'tBu', 1, 2], re: /isopropil|terc-butil/ },
     { title: 'Alquenos', ex: 'but-1-eno, 2-metilpent-2-eno', tpl: 'hc', n: [2, 7], dbl: [1, 1], tri: [0, 0], subs: [0, 1], sizes: [1] },
     { title: 'Alquinos', ex: 'propino, 4-metilpent-2-ino', tpl: 'hc', n: [2, 7], dbl: [0, 0], tri: [1, 1], subs: [0, 1], sizes: [1] },
     { title: 'Alquenos y alquinos ramificados', ex: '3-etil-4-metilhex-1-ino', tpl: 'hc', n: [4, 8], oneOf: true, subs: [1, 3], sizes: [1, 1, 2] },
     { title: 'Dienos y trienos', ex: 'but-1,3-dieno, hex-1,3,5-trieno', tpl: 'hc', n: [4, 8], dbl: [2, 3], tri: [0, 0], subs: [0, 2], sizes: [1, 2] },
     { title: 'Eninos', ex: 'but-1-en-3-ino, hex-3-en-1-ino', tpl: 'hc', n: [4, 8], dbl: [1, 2], tri: [1, 1], subs: [0, 2], sizes: [1, 2] },
-    { title: 'Hidrocarburos mezclados', ex: 'lo más difícil de los niveles 1–9', tpl: 'hc', n: [4, 10], dbl: [0, 2], tri: [0, 1], subs: [0, 3], sizes: [1, 1, 2, 3, 'iPr'] },
+    { title: 'Hidrocarburos mezclados', ex: 'lo más difícil de los niveles 1–9', tpl: 'hc', n: [4, 10], dbl: [0, 2], tri: [0, 1], subs: [0, 3], sizes: [1, 1, 2, 3, 'iPr', 'tBu'] },
     { title: 'Derivados halogenados y nitro', ex: 'bromometano, 2-nitrobutano', tpl: 'halo', re: /fluoro|cloro|bromo|yodo|nitro/ },
     { title: 'Alcoholes', ex: 'propan-1-ol, pentan-2,4-diol', tpl: 'alcohol', re: /ol$/ },
     { title: 'Éteres', ex: 'dimetiléter, etilpropiléter', tpl: 'eter', re: /éter$/ },
@@ -1934,22 +2012,22 @@ const INORG = (() => {
     { title: 'Aminas', ex: 'metilamina, dietilmetilamina', tpl: 'amina', re: /amina$/ },
     { title: 'Amidas', ex: 'propanamida, N-metiletanamida', tpl: 'amida', re: /amida$/ },
     { title: 'Nitrilos', ex: 'propanonitrilo, pent-2-enonitrilo', tpl: 'nitrilo', re: /nitrilo$/ },
-    { title: 'Todos los grupos', ex: 'mezcla de los niveles 11–20', tpl: 'mix' }
+    { title: 'Todos los grupos', ex: 'varios grupos a la vez: ácido 3-hidroxibutanoico, 2-metoxietanol', tpl: 'combo' }
   ];
   const MAXLVL = LVL.length - 1, FIRST_GROUP_LVL = 11;
 
   function generate(level, avoid) {
     for (let tries = 0; tries < 3000; tries++) {
-      let lv = level, cfg = LVL[lv];
-      if (cfg.tpl === 'mix') { lv = FIRST_GROUP_LVL + GROUP_TPL.indexOf(pick(GROUP_TPL)); cfg = LVL[lv]; }
+      const lv = level, cfg = LVL[lv];
       const G = TPL[cfg.tpl](cfg);
       if (!G) continue;
       if ([...G.atoms.keys()].some(k => gFree(G, k) < 0)) continue;
       if (!saneG(G)) continue;
       const name = CHEM.nameOf(G.atoms, G.bonds);
       if (!name || name === avoid || name.includes('(') || (cfg.re && !cfg.re.test(name))) continue;
+      if (G.groups && !comboNamed(G.groups, name)) continue;
       if (CHEM.nameOf(G.atoms, G.bonds, null, 1) !== name) continue;
-      return { atoms: G.atoms, bonds: G.bonds, name, canon: CHEM.canonOf(G.atoms, G.bonds), n: G.atoms.size, skill: lv };
+      return { atoms: G.atoms, bonds: G.bonds, name, canon: CHEM.canonOf(G.atoms, G.bonds), n: G.atoms.size, skill: lv, groups: G.groups || null };
     }
     return level > 1 ? generate(level - 1, avoid) : null;
   }
@@ -2432,7 +2510,7 @@ const INORG = (() => {
     const L = levelNow();
     if (!pr.adapt) return L;
     const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
-    if (L === MAXLVL) return pickSkill(range(FIRST_GROUP_LVL, SK_N), pr.lastSkill);
+    if (L === MAXLVL) return L;                    // combinados: la adaptativa decide qué grupos salen
     if (pr.fixed) return L;
     return pickSkill(range(1, L), pr.lastSkill);
   }
@@ -3246,7 +3324,7 @@ const INORG = (() => {
   const RADS = [
     ['metil', 'C[R]', 'CC(C)CC'], ['etil', 'CC[R]', 'CCC(CC)CCC'], ['propil', 'CCC[R]', 'CCCC(CCC)CCCC'],
     ['isopropil', 'CC(C)[R]', 'CCCC(C(C)C)CCC'], ['butil', 'CCCC[R]', 'CCCCC(CCCC)CCCCC'], ['isobutil', 'CC(C)C[R]', 'CCCCC(CC(C)C)CCCCC'],
-    ['sec-butil', 'CCC(C)[R]', 'CCCCC(C(C)CC)CCCCC']
+    ['sec-butil', 'CCC(C)[R]', 'CCCCC(C(C)CC)CCCCC'], ['terc-butil', 'CC(C)(C)[R]', 'CCCC(C(C)(C)C)CCC']
   ];
   function radicalGallery() {
     const wrap = document.createElement('div'); wrap.className = 'rad-wrap';
@@ -3536,7 +3614,7 @@ const INORG = (() => {
     pages.push(page('radicales', 'Hidrocarburos', 'Radicales', 'Son las ramas que salen de la cadena principal. Se nombran con la raíz + <b>-il</b>.', b => {
       b.append(html('div', 'col', `<ul class="rules">
         <li>Radicales lineales: <b>metil, etil, propil, butil…</b></li>
-        <li>Ramificados con nombre propio: <b>isopropil, isobutil, sec-butil</b>.</li>
+        <li>Ramificados con nombre propio: <b>isopropil, isobutil, sec-butil, terc-butil</b>.</li>
         <li>R indica por dónde se une el radical a la cadena.</li></ul>
         <p class="try">Pasa el ratón por un radical para ver un ejemplo.</p>`), html('div', 'col', ''));
       b.lastChild.appendChild(radicalGallery());
@@ -3557,6 +3635,7 @@ const INORG = (() => {
         <li>Cada prefijo lleva sus localizadores: <i>3-etil</i>.</li>
         <li>Si se repite: <b>di-, tri-, tetra-</b> y todos los números: <i>2,2-dimetil</i>.</li>
         <li><b>di-, tri-, tetra-</b> no cuentan para el orden: <i>dimetil</i> va por la <b>m</b>.</li>
+        <li><b>sec-</b> y <b>terc-</b> tampoco cuentan; <b>iso-</b> sí: <i>isopropil</i> va por la <b>i</b>.</li>
         <li><b>sec-</b> tampoco cuenta; <b>iso-</b> sí: <i>isopropil</i> va por la <b>i</b>.</li>
         <li>Entre números se pone coma; entre número y letra, guion.</li></ul>`), html('div', 'col', ''));
       b.lastChild.appendChild(alphaWidget('CCC(CC)C(C)(C)CC(Br)C'));
@@ -3564,6 +3643,9 @@ const INORG = (() => {
     pages.push(page('prioridad', 'Grupos funcionales', 'Qué grupo manda', 'Si una molécula tiene varios grupos, el más importante da la terminación. Los demás se nombran como prefijos.', b => {
       b.append(html('div', 'col wide', '<p class="try">Pasa el ratón por las filas para ver un ejemplo de cada grupo. Del más importante (arriba) al menos importante.</p>'));
       b.firstChild.appendChild(priorityTable());
+      const many = html('div', 'col wide', '<p class="try">Con <b>varios grupos a la vez</b>, el que manda da la terminación y los demás van delante como prefijos (<i>hidroxi, oxo, amino, metoxi…</i>). Es lo que practicas en el último nivel.</p><div class="mini-cards"></div>');
+      b.append(many);
+      ['CC(O)CC(=O)O', 'OCCOC', 'CC(=O)CC=O', 'CC(O)CCN'].forEach(sm => many.querySelector('.mini-cards').appendChild(molCard(sm, { small: true })));
     }));
     GROUP_PAGES.forEach((g, i) => pages.push(page(g.id, 'Grupos funcionales · ' + (i + 1) + ' de ' + GROUP_PAGES.length, g.t, '', b => {
       b.append(html('div', 'col', `
