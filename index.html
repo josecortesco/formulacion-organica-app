@@ -86,13 +86,12 @@
   /* El tablero ocupa todo el ancho de la ventana (no solo la columna central) y se difumina en los bordes */
   html,body{overflow:hidden}
   .board{position:relative;min-height:240px;overflow:hidden;background:var(--paper);width:100vw;margin-left:calc(50% - 50vw)}
-  .board canvas{
-    -webkit-mask-image:linear-gradient(to right, transparent 0, #000 56px, #000 calc(100% - 56px), transparent 100%), linear-gradient(to bottom, transparent 0, #000 36px, #000 calc(100% - 36px), transparent 100%);
-    -webkit-mask-composite:source-in;
-    mask-image:linear-gradient(to right, transparent 0, #000 56px, #000 calc(100% - 56px), transparent 100%), linear-gradient(to bottom, transparent 0, #000 36px, #000 calc(100% - 36px), transparent 100%);
-    mask-composite:intersect}
+  /* Los bordes se difuminan con dos capas estáticas: una máscara CSS sobre el canvas obligaba a recomponer toda la pantalla en cada fotograma */
+  .board::before,.board::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none}
+  .board::before{background:linear-gradient(to right, var(--paper) 0, transparent 56px, transparent calc(100% - 56px), var(--paper) 100%)}
+  .board::after{background:linear-gradient(to bottom, var(--paper) 0, transparent 36px, transparent calc(100% - 36px), var(--paper) 100%)}
   canvas{display:block;width:100%;height:100%;outline:none;cursor:pointer;touch-action:none}
-  .note{position:absolute;left:max(16px, calc(50vw - 600px));bottom:6px;margin:0;font-size:.8rem;color:var(--muted);max-width:100%}
+  .note{position:absolute;z-index:2;left:max(16px, calc(50vw - 600px));bottom:6px;margin:0;font-size:.8rem;color:var(--muted);max-width:100%}
   .pill{position:absolute;top:8px;left:50%;transform:translateX(-50%);font-size:.8rem;padding:6px 12px;border-radius:999px;white-space:nowrap;pointer-events:none;max-width:calc(100% - 16px);overflow:hidden;text-overflow:ellipsis;z-index:3}
   .pill.dark{background:var(--ink);color:var(--paper)}
   .pill.accent{background:var(--accent);color:var(--paper)}
@@ -2262,10 +2261,11 @@ const INORG = (() => {
           muted: g('--muted'), panel: g('--panel'), line: g('--line'), good: g('--good'), bad: g('--bad'), serif: g('--serif'), mono: g('--mono'),
           o: g('--el-o'), n: g('--el-n'), x: g('--el-x') };
   };
+  let gBox = null;   // zona de la cuadrícula dibujada en el fotograma anterior
   function resize() {
     const r = board.getBoundingClientRect();
     if (!r.width || !r.height) return;
-    view.dpr = window.devicePixelRatio || 1; view.w = r.width; view.h = r.height;
+    view.dpr = Math.min(2, window.devicePixelRatio || 1); view.w = r.width; view.h = r.height; gBox = null;
     for (const c of [cv, gridCv]) { c.width = Math.round(r.width * view.dpr); c.height = Math.round(r.height * view.dpr); }
     ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
     gctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
@@ -2284,13 +2284,20 @@ const INORG = (() => {
   }
   const elColor = el => el === 'C' ? T.ink : el === 'O' ? T.o : (el === 'N' || el === 'NO2') ? T.n : T.x;
 
+  // La cuadrícula solo se ve alrededor del foco, así que solo se dibuja y compone esa zona
+  // (antes eran varias pasadas a pantalla completa en cada fotograma: lo que hacía lento el programa).
   function drawGrid() {
-    const c = view.cell, R = c * 3.3, px = sx(gf.x), py = sy(gf.y);
+    const c = view.cell, R = c * 3.3, px = sx(gf.x), py = sy(gf.y), dpr = view.dpr;
+    const x0 = Math.max(0, Math.floor(px - R)), x1 = Math.min(view.w, Math.ceil(px + R));
+    const y0 = Math.max(0, Math.floor(py - R)), y1 = Math.min(view.h, Math.ceil(py + R));
+    if (gBox) gctx.clearRect(gBox[0] - 1, gBox[1] - 1, gBox[2] - gBox[0] + 2, gBox[3] - gBox[1] + 2);
+    else gctx.clearRect(0, 0, view.w, view.h);
+    gBox = [x0, y0, x1, y1];
+    if (x1 <= x0 || y1 <= y0) return;
     gctx.save();
+    gctx.beginPath(); gctx.rect(x0, y0, x1 - x0, y1 - y0); gctx.clip();
     gctx.globalCompositeOperation = 'source-over';
-    gctx.clearRect(0, 0, view.w, view.h);
     gctx.strokeStyle = T.grid; gctx.lineWidth = 1;
-    const x0 = Math.floor(px - R), x1 = Math.ceil(px + R), y0 = Math.floor(py - R), y1 = Math.ceil(py + R);
     gctx.beginPath();
     const firstX = Math.ceil((x0 - view.w / 2) / c + cam.x - 0.5) + 0.5;
     for (let gx = firstX; sx(gx) <= x1; gx++) { const X = Math.round(sx(gx)) + .5; gctx.moveTo(X, y0); gctx.lineTo(X, y1); }
@@ -2301,9 +2308,9 @@ const INORG = (() => {
     const g = gctx.createRadialGradient(px, py, 0, px, py, R);
     g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(0.45, 'rgba(0,0,0,1)');
     g.addColorStop(0.75, 'rgba(0,0,0,.45)'); g.addColorStop(1, 'rgba(0,0,0,0)');
-    gctx.fillStyle = g; gctx.fillRect(0, 0, view.w, view.h);
+    gctx.fillStyle = g; gctx.fillRect(x0, y0, x1 - x0, y1 - y0);
     gctx.restore();
-    ctx.drawImage(gridCv, 0, 0, view.w, view.h);
+    ctx.drawImage(gridCv, x0 * dpr, y0 * dpr, (x1 - x0) * dpr, (y1 - y0) * dpr, x0, y0, x1 - x0, y1 - y0);
   }
 
   function bondLines(x1, y1, x2, y2, o, horizontal, bk, firstKey) {
@@ -2335,8 +2342,7 @@ const INORG = (() => {
   function render() {
     if (!view.w) return;
     const c = view.cell;
-    ctx.clearRect(0, 0, view.w, view.h);
-    ctx.fillStyle = T.paper; ctx.fillRect(0, 0, view.w, view.h);
+    ctx.clearRect(0, 0, view.w, view.h);      // el fondo lo pone el tablero (CSS), no hace falta pintarlo aquí
     drawGrid();
     if (mode === 'ptable') { renderPT(); return; }
 
@@ -4496,7 +4502,7 @@ const INORG = (() => {
     });
   }
   window.__pq = { pq, pqOn, ptType, ptCheck, pqAccepted, state };
-  window.__co = { generate, CHEM, K, BK, LVL, state, pr, cam, view, getStats: () => stats, skillInfo, nextLevel, record, newRound };
+  window.__co = { render, generate, CHEM, K, BK, LVL, state, pr, cam, view, getStats: () => stats, skillInfo, nextLevel, record, newRound };
 })();
 </script>
 
